@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html><head><base target="_top"><meta charset="utf-8"></head><body>
+<script>
+(function () {
+  'use strict';
+  const BOOT = <?!= bootJson ?>;
+  const PROTOCOL = 'seating-bridge-v1';
+  const METHODS = new Set(['getInitialData','getState','getRoomData','saveSeat','saveSettings']);
+  const responses = new Map();
+  let client = null, announceTimer = null;
+  function envelope(body) { return Object.assign({protocol: PROTOCOL, channel: BOOT.channel}, body); }
+  function isAncestor(source) {
+    try {
+      let cursor = window;
+      for (let i = 0; i < 12; i++) {
+        const parent = cursor.parent;
+        if (!parent || parent === cursor) break;
+        if (parent === source) return true;
+        cursor = parent;
+      }
+    } catch (_) { return false; }
+    return false;
+  }
+  function announce() {
+    // ส่งถึง ancestor ที่มี origin ตรงกับหน้า GitHub เท่านั้น ไม่ใช้ targetOrigin '*'
+    let cursor = window;
+    for (let i = 0; i < 12; i++) {
+      try {
+        const parent = cursor.parent;
+        if (!parent || parent === cursor) break;
+        parent.postMessage(envelope(BOOT.error ? {kind:'error',error:BOOT.error} : {kind:'ready'}), BOOT.parentOrigin);
+        cursor = parent;
+      } catch (_) { break; }
+    }
+  }
+  function reply(id, result) {
+    responses.set(id, result);
+    // เก็บคำตอบล่าสุดเพื่อไม่ให้ request ID เดิมเขียนซ้ำ และจำกัดหน่วยความจำ
+    if (responses.size > 100) {
+      for (const pair of responses) {
+        if (pair[1] !== null && pair[0] !== id) { responses.delete(pair[0]); break; }
+      }
+    }
+    if (client) client.postMessage(envelope({kind:'response',id:id,result:result}), BOOT.parentOrigin);
+  }
+  window.addEventListener('message', function (event) {
+    const data = event.data;
+    if (BOOT.error || event.origin !== BOOT.parentOrigin || !isAncestor(event.source) || !data ||
+        typeof data !== 'object' || data.protocol !== PROTOCOL || data.channel !== BOOT.channel) return;
+    if (data.kind === 'ack') { client = event.source; clearInterval(announceTimer); return; }
+    if (data.kind !== 'request' || !client || event.source !== client || typeof data.id !== 'string' ||
+        data.id.length > 140 || !data.id.startsWith(BOOT.channel + ':')) return;
+    if (responses.has(data.id)) {
+      const result = responses.get(data.id);
+      if (result !== null) reply(data.id, result);
+      return;
+    }
+    const request = data.request;
+    if (!request || !METHODS.has(request.method) || !Array.isArray(request.args)) {
+      reply(data.id, {ok:false,error:'ไม่รองรับคำสั่งนี้'}); return;
+    }
+    responses.set(data.id, null);
+    try {
+      google.script.run.withSuccessHandler(function (result) { reply(data.id,result); })
+        .withFailureHandler(function (error) { reply(data.id,{ok:false,error:error && error.message ? error.message : String(error)}); })
+        .apiRequest({method:request.method,args:request.args});
+    } catch (error) { reply(data.id,{ok:false,error:error && error.message ? error.message : String(error)}); }
+  });
+  if (BOOT.parentOrigin && BOOT.channel) {
+    announceTimer = setInterval(announce, 1000);
+    announce();
+    setTimeout(function () { clearInterval(announceTimer); }, 60000);
+  }
+})();
+</script>
+</body></html>
