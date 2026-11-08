@@ -328,8 +328,8 @@ function renderTable(){
         let nearest=Infinity;
         for(const other of l.seats){if(other.id===s.id)continue;const d=Math.hypot(other.x-s.x,other.y-s.y);if(d>0)nearest=Math.min(nearest,d);}
         const gap=Number.isFinite(nearest)?nearest:Math.max(s.w,s.h)*2;
-        const w=Math.max(30,Math.min(s.w*1.18,gap*.82))*cardScale;
-        const h=Math.max(22,Math.min(s.h*1.28,gap*.52))*cardScale;
+        const w=Math.max(30,Math.min(s.w*1.55,gap*.90))*cardScale;
+        const h=Math.max(22,Math.min(s.h*1.75,gap*.86))*cardScale;
         const angle=(s.rotation||0)*Math.PI/180,c=Math.abs(Math.cos(angle)),sn=Math.abs(Math.sin(angle));
         const halfW=(c*w+sn*h)/2,halfH=(sn*w+c*h)/2;
         return {id:s.id,x1:s.x-halfW,x2:s.x+halfW,y1:s.y-halfH,y2:s.y+halfH};
@@ -360,23 +360,45 @@ function renderTable(){
         if(distance>0)nearest=Math.min(nearest,distance);
       }
       const safeGap=Number.isFinite(nearest)?nearest:Math.max(s.w,s.h)*2;
-      const boxW=Math.max(30,Math.min(s.w*1.18,safeGap*.82))*cardScale;
-      const boxH=Math.max(22,Math.min(s.h*1.28,safeGap*.52))*cardScale;
-      const labelSize=Math.max(5,Math.min(10.5,boxW/8.2));
-      const numberSize=Math.max(4.8,Math.min(8.5,boxW/10));
-      const words=value.length>40?value.slice(0,39)+'…':value;
-      const splitAt=Math.ceil(words.length/2);
-      let line1=words,line2='';
-      if(words.length>15){
-        let cut=words.lastIndexOf(' ',splitAt);
-        if(cut<5)cut=splitAt;
-        line1=words.slice(0,cut).trim();line2=words.slice(cut).trim();
+      const boxW=Math.max(30,Math.min(s.w*1.55,safeGap*.90))*cardScale;
+      const boxH=Math.max(22,Math.min(s.h*1.75,safeGap*.86))*cardScale;
+      const numberSize=Math.max(5.5,Math.min(9,boxW/9.5));
+      // แบ่งข้อความตามคำภาษาไทย เพื่อไม่ให้ตัดพยัญชนะหรือสระของคำเดียวกัน
+      let tokens;
+      try{
+        tokens=Array.from(new Intl.Segmenter('th',{granularity:'word'}).segment(value),x=>x.segment);
+      }catch(e){
+        tokens=value.split(/(\\s+)/).filter(Boolean);
+      }
+      const longestWord=Math.max(1,...tokens.map(t=>t.trim().length));
+      let labelSize=Math.max(5.5,Math.min(11.5,boxW/7.2,boxH/5.2,(boxW-12)/(longestWord*.92)));
+      const maxChars=Math.max(3,Math.floor((boxW-12)/(labelSize*.92)));
+      const wrapped=[];
+      let line='';
+      for(const token of tokens){
+        const candidate=(line+token).replace(/\\s/g,'');
+        if(line && candidate.length>maxChars){
+          wrapped.push(line.trim());line=token.trimStart();
+        }else line+=token;
+      }
+      if(line.trim())wrapped.push(line.trim());
+      const maxLines=Math.max(1,Math.floor((boxH*.48)/(labelSize*1.18)));
+      let displayLines=wrapped.slice(0,maxLines);
+      if(wrapped.length>maxLines){
+        // เติมจุดไข่ปลาโดยตัดออกทีละคำ ไม่ตัดกลางคำ
+        let last=displayLines[maxLines-1]||'';
+        let parts;
+        try{parts=Array.from(new Intl.Segmenter('th',{granularity:'word'}).segment(last),x=>x.segment);}
+        catch(e){parts=last.split(/(\\s+)/).filter(Boolean);}
+        while(parts.length && parts.join('').replace(/\\s/g,'').length+1>maxChars)parts.pop();
+        last=parts.join('').trim();
+        displayLines[maxLines-1]=(last||'')+'…';
       }
       out+=`<g class="summary-seat" transform="translate(${s.x} ${s.y}) rotate(${s.rotation||0})">
         <rect x="${-boxW/2}" y="${-boxH/2}" width="${boxW}" height="${boxH}" rx="8" fill="${blocked?'#fff1f0':'#f8faf9'}" stroke="${blocked?'#b42323':s.color||'#59756b'}" stroke-width="2.2"/>
-        <text x="0" y="${-boxH*.27}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${numberSize}" font-weight="bold" fill="#9a7134">ที่นั่ง ${esc(number)}</text>
-        <text x="0" y="${line2?boxH*.13:boxH*.12}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${labelSize}" font-weight="bold" fill="${blocked?'#a53131':'#192f38'}"><tspan x="0" dy="${line2?'-0.5em':'0'}">${esc(line1)}</tspan>${line2?`<tspan x="0" dy="1.05em">${esc(line2)}</tspan>`:''}</text>
-        ${blocked?`<text x="0" y="${boxH*.39}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="7" fill="#b42323">งดใช้งาน</text>`:''}
+        <text x="0" y="${-boxH*.31}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${numberSize}" font-weight="bold" fill="#9a7134">ที่นั่ง ${esc(number)}</text>
+        <text x="0" y="${-((displayLines.length-1)*labelSize*1.12)/2+boxH*.10}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${labelSize}" font-weight="bold" fill="${blocked?'#a53131':'#192f38'}">${displayLines.map((line,i)=>`<tspan x="0" dy="${i===0?0:labelSize*1.12}">${esc(line)}</tspan>`).join('')}</text>
+        ${blocked?`<text x="0" y="${boxH*.38}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="7" fill="#b42323">งดใช้งาน</text>`:''}
       </g>`;
     });
     out+='</svg>';
