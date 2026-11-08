@@ -23,8 +23,8 @@ header{position:sticky;top:0;z-index:20;background:#142a35;color:white;border-bo
 .summary-map-zoom{display:flex;align-items:center;gap:6px}.summary-map-zoom button{min-width:34px;padding:7px 10px;font-size:17px;line-height:1}.summary-map-zoom button:last-child{font-size:11px}.summary-map-zoom span{min-width:43px;text-align:center;font-size:12px;font-variant-numeric:tabular-nums}
 .summary-map-close{position:absolute;right:17px;top:16px;width:34px;height:34px;border-radius:50%;font-size:23px;line-height:1;background:#f2f5f3}
 .summary-map-canvas{flex:1;min-height:0;overflow:auto;padding:24px;display:flex;align-items:flex-start;justify-content:center;background-color:#eef2f0;background-image:radial-gradient(#cbd5d0 0.7px,transparent 0.7px);background-size:16px 16px}
-.summary-map-canvas .summary-plan{width:100%;max-width:1500px;overflow:visible;padding:16px;background:#fff;border:1px solid #dce3e0;border-radius:14px;box-shadow:0 8px 30px #142a3512}
-.summary-map-canvas svg{display:block;width:calc(100% * var(--summary-zoom,1));height:auto;min-width:0;max-width:none;margin:0 auto}
+.summary-map-canvas .summary-plan{flex:0 0 auto;width:var(--summary-plan-width,100%);max-width:none;overflow:visible;padding:16px;background:#fff;border:1px solid #dce3e0;border-radius:14px;box-shadow:0 8px 30px #142a3512;transition:width .16s ease}
+.summary-map-canvas svg{display:block;width:100%;height:auto;min-width:0;max-width:none;margin:0 auto}
 .summary-map-canvas .empty{background:#fff;border-radius:12px;width:100%}
 @media(max-width:760px){.summary-map-header{align-items:flex-start;padding:14px 52px 13px 15px;flex-direction:column;gap:10px}.summary-map-heading h2{font-size:17px}.summary-map-actions{width:100%;justify-content:flex-start;padding:0;gap:8px}.summary-map-search{flex:1;min-width:150px}.summary-map-search input{width:100%;min-width:80px}.summary-map-zoom{margin-left:auto}.summary-map-canvas{padding:10px}.summary-map-canvas .summary-plan{padding:8px;border-radius:9px}.summary-map-close{right:12px;top:12px}}
 @media print{.summary-map-dialog{display:none!important}}
@@ -321,6 +321,27 @@ function renderTable(){
   if(S.meeting&&S.summaryLayout==='map'){
     const l=room.layout,field=S.summaryType==='position'?'position':'name';
     const visible=new Set(rows.map(s=>s.id));
+    // ลดขนาดกรอบทั้งผังอย่างพอดี หากตรวจพบว่ากรอบที่นั่งใดมีโอกาสชนกัน
+    let cardScale=1;
+    for(let attempt=0;attempt<18;attempt++){
+      const bounds=l.seats.map(s=>{
+        let nearest=Infinity;
+        for(const other of l.seats){if(other.id===s.id)continue;const d=Math.hypot(other.x-s.x,other.y-s.y);if(d>0)nearest=Math.min(nearest,d);}
+        const gap=Number.isFinite(nearest)?nearest:Math.max(s.w,s.h)*2;
+        const w=Math.max(30,Math.min(s.w*1.18,gap*.82))*cardScale;
+        const h=Math.max(22,Math.min(s.h*1.28,gap*.52))*cardScale;
+        const angle=(s.rotation||0)*Math.PI/180,c=Math.abs(Math.cos(angle)),sn=Math.abs(Math.sin(angle));
+        const halfW=(c*w+sn*h)/2,halfH=(sn*w+c*h)/2;
+        return {id:s.id,x1:s.x-halfW,x2:s.x+halfW,y1:s.y-halfH,y2:s.y+halfH};
+      });
+      let collision=false;
+      for(let i=0;i<bounds.length&&!collision;i++)for(let j=i+1;j<bounds.length;j++){
+        const a=bounds[i],b=bounds[j];
+        if(Math.min(a.x2,b.x2)-Math.max(a.x1,b.x1)>1&&Math.min(a.y2,b.y2)-Math.max(a.y1,b.y1)>1){collision=true;break;}
+      }
+      if(!collision)break;
+      cardScale*=.92;
+    }
     let out=`<svg viewBox="0 0 ${l.width} ${l.height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="สรุปข้อมูลตามผังห้อง ${esc(room.name)}"><defs><linearGradient id="summaryTableFill" x2="0" y2="1"><stop stop-color="#fbf6e8"/><stop offset="1" stop-color="#f7f0e1"/></linearGradient></defs><rect width="${l.width}" height="${l.height}" fill="#fff"/>`;
     (l.decor||[]).forEach(d=>{
       const table=d.type==='table',bar=d.type==='bar';
@@ -331,23 +352,31 @@ function renderTable(){
       const a=S.assignments[s.id]||{},blocked=a.usage==='disabled';
       const value=String(a[field]||(field==='name'?'ยังไม่ระบุชื่อ':'ยังไม่ระบุตำแหน่ง'));
       const number=String(a.number||'—');
-      const boxW=Math.max(s.w,Math.min(s.w*2.55,260));
-      const boxH=Math.max(s.h,Math.min(s.h*2.35,112));
-      const labelSize=Math.max(9,Math.min(15,boxW/13));
-      const numberSize=Math.max(9,Math.min(12,boxW/15));
-      const words=value.length>34?value.slice(0,34)+'…':value;
+      // คำนวณระยะห่างจากเก้าอี้ข้างเคียง เพื่อจำกัดกรอบไม่ให้ล้ำไปทับที่นั่งอื่น
+      let nearest=Infinity;
+      for(const other of l.seats){
+        if(other.id===s.id)continue;
+        const distance=Math.hypot(other.x-s.x,other.y-s.y);
+        if(distance>0)nearest=Math.min(nearest,distance);
+      }
+      const safeGap=Number.isFinite(nearest)?nearest:Math.max(s.w,s.h)*2;
+      const boxW=Math.max(30,Math.min(s.w*1.18,safeGap*.82))*cardScale;
+      const boxH=Math.max(22,Math.min(s.h*1.28,safeGap*.52))*cardScale;
+      const labelSize=Math.max(5,Math.min(10.5,boxW/8.2));
+      const numberSize=Math.max(4.8,Math.min(8.5,boxW/10));
+      const words=value.length>40?value.slice(0,39)+'…':value;
       const splitAt=Math.ceil(words.length/2);
       let line1=words,line2='';
-      if(words.length>22){
+      if(words.length>15){
         let cut=words.lastIndexOf(' ',splitAt);
-        if(cut<8)cut=splitAt;
+        if(cut<5)cut=splitAt;
         line1=words.slice(0,cut).trim();line2=words.slice(cut).trim();
       }
       out+=`<g class="summary-seat" transform="translate(${s.x} ${s.y}) rotate(${s.rotation||0})">
         <rect x="${-boxW/2}" y="${-boxH/2}" width="${boxW}" height="${boxH}" rx="8" fill="${blocked?'#fff1f0':'#f8faf9'}" stroke="${blocked?'#b42323':s.color||'#59756b'}" stroke-width="2.2"/>
-        <text x="0" y="${-boxH*.25}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${numberSize}" font-weight="bold" fill="#9a7134">ที่นั่ง ${esc(number)}</text>
-        <text x="0" y="${line2?1:boxH*.08}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${labelSize}" font-weight="bold" fill="${blocked?'#a53131':'#192f38'}"><tspan x="0" dy="${line2?'-0.55em':'0'}">${esc(line1)}</tspan>${line2?`<tspan x="0" dy="1.15em">${esc(line2)}</tspan>`:''}</text>
-        ${blocked?`<text x="0" y="${boxH*.36}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="9" fill="#b42323">งดใช้งาน</text>`:''}
+        <text x="0" y="${-boxH*.27}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${numberSize}" font-weight="bold" fill="#9a7134">ที่นั่ง ${esc(number)}</text>
+        <text x="0" y="${line2?boxH*.13:boxH*.12}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${labelSize}" font-weight="bold" fill="${blocked?'#a53131':'#192f38'}"><tspan x="0" dy="${line2?'-0.5em':'0'}">${esc(line1)}</tspan>${line2?`<tspan x="0" dy="1.05em">${esc(line2)}</tspan>`:''}</text>
+        ${blocked?`<text x="0" y="${boxH*.39}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="7" fill="#b42323">งดใช้งาน</text>`:''}
       </g>`;
     });
     out+='</svg>';
@@ -355,6 +384,7 @@ function renderTable(){
     if(target){
       target.style.setProperty('--summary-zoom',S.summaryZoom||1);
       target.innerHTML=rows.length?`<div class="summary-plan">${out}</div>`:'<div class="empty">ไม่พบข้อมูลที่ค้นหา</div>';
+      updateSummaryMapZoom();
     }
     return;
   }
@@ -366,7 +396,19 @@ function renderTable(){
   }).join('')+'</tbody></table>'+(!rows.length?'<div class="empty">ไม่พบข้อมูลที่ค้นหา</div>':'');
 }
 function updateSummaryMapZoom(){
-  const canvas=$('summaryMapCanvas');if(canvas)canvas.style.setProperty('--summary-zoom',S.summaryZoom||1);
+  const canvas=$('summaryMapCanvas');
+  if(canvas){
+    const plan=canvas.querySelector('.summary-plan');
+    const zoom=S.summaryZoom||1;
+    canvas.style.setProperty('--summary-zoom',zoom);
+    if(plan){
+      const styles=getComputedStyle(canvas);
+      const horizontalPadding=parseFloat(styles.paddingLeft||0)+parseFloat(styles.paddingRight||0);
+      const available=Math.max(280,canvas.clientWidth-horizontalPadding);
+      const baseWidth=Math.min(1500,available);
+      plan.style.setProperty('--summary-plan-width',`${Math.round(baseWidth*zoom)}px`);
+    }
+  }
   const label=$('summaryMapZoomValue');if(label)label.textContent=Math.round((S.summaryZoom||1)*100)+'%';
 }
 function openSummaryMap(){
@@ -375,8 +417,9 @@ function openSummaryMap(){
   $('summaryMapSubtitle').textContent=(S.meeting.title||'')+' · '+(currentRoom()?.name||'');
   $('summaryMapSearch').value=S.query||'';
   document.querySelectorAll('#summaryMapDialog [data-summary-type]').forEach(b=>{const active=b.dataset.summaryType===S.summaryType;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});
-  updateSummaryMapZoom();renderTable();
+  renderTable();
   if(!$('summaryMapDialog').open)$('summaryMapDialog').showModal();
+  requestAnimationFrame(updateSummaryMapZoom);
 }
 $('summaryMapSearch').addEventListener('input',e=>{S.query=e.target.value;renderTable();});
 $('summaryMapDialog').addEventListener('close',()=>{
