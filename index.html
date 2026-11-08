@@ -26,7 +26,7 @@ header{position:sticky;top:0;z-index:20;background:#142a35;color:white;border-bo
 .summary-map-canvas .summary-plan{flex:0 0 auto;width:var(--summary-plan-width,100%);max-width:none;overflow:visible;padding:16px;background:#fff;border:1px solid #dce3e0;border-radius:14px;box-shadow:0 8px 30px #142a3512;transition:width .16s ease}
 .summary-map-canvas svg{display:block;width:100%;height:auto;min-width:0;max-width:none;margin:0 auto}
 .summary-map-canvas .empty{background:#fff;border-radius:12px;width:100%}
-.summary-seat-tooltip{position:fixed;z-index:10050;display:none;pointer-events:none;min-width:220px;max-width:min(360px,calc(100vw - 24px));padding:13px 15px;border:1px solid #d9c49b;border-radius:12px;background:#142a35;color:#fff;box-shadow:0 12px 34px #10263055;font:13px/1.55 Tahoma,"Noto Sans Thai",sans-serif;white-space:normal;overflow-wrap:anywhere}
+.summary-seat-tooltip{position:fixed;z-index:2147483000;display:none;pointer-events:none;min-width:220px;max-width:min(360px,calc(100vw - 24px));padding:13px 15px;border:1px solid #d9c49b;border-radius:12px;background:#142a35;color:#fff;box-shadow:0 12px 34px #10263055;font:13px/1.55 Tahoma,"Noto Sans Thai",sans-serif;white-space:normal;overflow-wrap:anywhere}
 .summary-seat-tooltip.visible{display:block}.summary-seat-tooltip strong{display:block;color:#f0d39c;font-size:14px;margin-bottom:7px}.summary-seat-tooltip .tooltip-row{display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px;padding:3px 0;border-top:1px solid #ffffff20}.summary-seat-tooltip .tooltip-label{color:#b9c9cd}.summary-seat-tooltip .tooltip-value{color:#fff;overflow-wrap:anywhere;word-break:normal}
 .summary-map-canvas .summary-seat{cursor:help}.summary-map-canvas .summary-seat:hover rect{stroke:#c09142;stroke-width:3.5;filter:brightness(.98)}
 @media(max-width:760px){.summary-map-header{align-items:flex-start;padding:14px 52px 13px 15px;flex-direction:column;gap:10px}.summary-map-heading h2{font-size:17px}.summary-map-actions{width:100%;justify-content:flex-start;padding:0;gap:8px}.summary-map-search{flex:1;min-width:150px}.summary-map-search input{width:100%;min-width:80px}.summary-map-zoom{margin-left:auto}.summary-map-canvas{padding:10px}.summary-map-canvas .summary-plan{padding:8px;border-radius:9px}.summary-map-close{right:12px;top:12px}}
@@ -326,18 +326,53 @@ function renderTable(){
   if(S.meeting&&S.summaryLayout==='map'){
     const l=room.layout,field=S.summaryType==='position'?'position':'name';
     const visible=new Set(rows.map(s=>s.id));
-    // ลดขนาดกรอบทั้งผังอย่างพอดี หากตรวจพบว่ากรอบที่นั่งใดมีโอกาสชนกัน
+    // คำนวณกรอบจากข้อความจริงก่อนวาด เพื่อให้แสดงครบและไม่ชนกับที่นั่งข้างเคียง
+    const seatMetrics=new Map();
+    const measureCanvas=document.createElement('canvas');
+    const measureCtx=measureCanvas.getContext('2d');
+    const segmenter=typeof Intl!=='undefined'&&Intl.Segmenter?new Intl.Segmenter('th',{granularity:'word'}):null;
+    const getTokens=value=>segmenter?Array.from(segmenter.segment(value),part=>part.segment):value.split(/(\s+)/).filter(Boolean);
+    const wrapByWords=(value,maxWidth,fontSize)=>{
+      measureCtx.font=`bold ${fontSize}px Tahoma, "Noto Sans Thai", sans-serif`;
+      const tokens=getTokens(value);let lines=[],line='',lineWidth=0;
+      for(const token of tokens){
+        const tokenWidth=measureCtx.measureText(token).width;
+        if(line && lineWidth+tokenWidth>maxWidth){
+          lines.push(line.trim());line=token.trimStart();lineWidth=measureCtx.measureText(line).width;
+        }else{line+=token;lineWidth+=tokenWidth;}
+      }
+      if(line.trim())lines.push(line.trim());
+      return lines.length?lines:[value];
+    };
     let cardScale=1;
-    for(let attempt=0;attempt<18;attempt++){
-      const bounds=l.seats.map(s=>{
+    for(let attempt=0;attempt<28;attempt++){
+      seatMetrics.clear();
+      l.seats.forEach(s=>{
+        if(!visible.has(s.id))return;
+        const a=S.assignments[s.id]||{},blocked=a.usage==='disabled';
+        const value=String(a[field]||(field==='name'?'ยังไม่ระบุชื่อ':'ยังไม่ระบุตำแหน่ง'));
         let nearest=Infinity;
         for(const other of l.seats){if(other.id===s.id)continue;const d=Math.hypot(other.x-s.x,other.y-s.y);if(d>0)nearest=Math.min(nearest,d);}
-        const gap=Number.isFinite(nearest)?nearest:Math.max(s.w,s.h)*2;
-        const w=Math.max(30,Math.min(s.w*1.55,gap*.90))*cardScale;
-        const h=Math.max(22,Math.min(s.h*1.75,gap*.86))*cardScale;
-        const angle=(s.rotation||0)*Math.PI/180,c=Math.abs(Math.cos(angle)),sn=Math.abs(Math.sin(angle));
-        const halfW=(c*w+sn*h)/2,halfH=(sn*w+c*h)/2;
-        return {id:s.id,x1:s.x-halfW,x2:s.x+halfW,y1:s.y-halfH,y2:s.y+halfH};
+        const safeGap=Number.isFinite(nearest)?nearest:Math.max(s.w,s.h)*2;
+        const boxW=Math.max(26,Math.min(s.w*2.05,safeGap*.90))*cardScale;
+        const numberSize=Math.max(4.4,8.2*cardScale);
+        let labelSize=Math.max(4.4,Math.min(11.5*cardScale,(boxW-14)/8));
+        // ลดตัวอักษรเท่าที่จำเป็นเพื่อให้คำที่ยาวที่สุดอยู่ในกรอบโดยไม่ตัดกลางคำ
+        const tokens=getTokens(value);
+        measureCtx.font=`bold 1px Tahoma, "Noto Sans Thai", sans-serif`;
+        const longestTokenWidth=Math.max(1,...tokens.map(t=>measureCtx.measureText(t).width));
+        labelSize=Math.min(labelSize,Math.max(4.4,(boxW-14)/longestTokenWidth));
+        const lines=wrapByWords(value,Math.max(12,boxW-14),labelSize);
+        const lineHeight=labelSize*1.22;
+        const statusExtra=blocked?10:0;
+        const contentHeight=numberSize*1.35+8+lines.length*lineHeight+statusExtra+16;
+        const boxH=Math.max(s.h*1.45*cardScale,contentHeight);
+        seatMetrics.set(s.id,{boxW,boxH,numberSize,labelSize,lineHeight,lines,blocked});
+      });
+      const bounds=l.seats.filter(s=>seatMetrics.has(s.id)).map(s=>{
+        const m=seatMetrics.get(s.id),angle=(s.rotation||0)*Math.PI/180,c=Math.abs(Math.cos(angle)),sn=Math.abs(Math.sin(angle));
+        const halfW=(c*m.boxW+sn*m.boxH)/2,halfH=(sn*m.boxW+c*m.boxH)/2;
+        return {x1:s.x-halfW,x2:s.x+halfW,y1:s.y-halfH,y2:s.y+halfH};
       });
       let collision=false;
       for(let i=0;i<bounds.length&&!collision;i++)for(let j=i+1;j<bounds.length;j++){
@@ -353,54 +388,18 @@ function renderTable(){
       out+=`<rect x="${d.x-d.w/2}" y="${d.y-d.h/2}" width="${d.w}" height="${d.h}" rx="${table?Math.min(14,d.h/4):bar?4:5}" transform="rotate(${d.rotation||0} ${d.x} ${d.y})" fill="${table?'url(#summaryTableFill)':bar?(d.color||'#d9e0e2'):'#e0d0bb'}" ${bar?'opacity=".82"':`stroke="${d.color}" stroke-width="2"`}/>`;
     });
     l.seats.forEach(s=>{
-      if(!visible.has(s.id))return;
-      const a=S.assignments[s.id]||{},blocked=a.usage==='disabled';
-      const value=String(a[field]||(field==='name'?'ยังไม่ระบุชื่อ':'ยังไม่ระบุตำแหน่ง'));
-      const number=String(a.number||'—');
-      // คำนวณระยะห่างจากเก้าอี้ข้างเคียง เพื่อจำกัดกรอบไม่ให้ล้ำไปทับที่นั่งอื่น
-      let nearest=Infinity;
-      for(const other of l.seats){
-        if(other.id===s.id)continue;
-        const distance=Math.hypot(other.x-s.x,other.y-s.y);
-        if(distance>0)nearest=Math.min(nearest,distance);
-      }
-      const safeGap=Number.isFinite(nearest)?nearest:Math.max(s.w,s.h)*2;
-      const boxW=Math.max(30,Math.min(s.w*1.55,safeGap*.90))*cardScale;
-      const boxH=Math.max(22,Math.min(s.h*1.75,safeGap*.86))*cardScale;
-      const numberSize=Math.max(5.5,Math.min(9,boxW/9.5));
-      // แบ่งข้อความตามคำภาษาไทย เพื่อไม่ให้ตัดพยัญชนะหรือสระของคำเดียวกัน
-      let tokens;
-      try{
-        tokens=Array.from(new Intl.Segmenter('th',{granularity:'word'}).segment(value),x=>x.segment);
-      }catch(e){
-        tokens=value.split(/(\\s+)/).filter(Boolean);
-      }
-      const longestWord=Math.max(1,...tokens.map(t=>t.trim().length));
-      let labelSize=Math.max(5.5,Math.min(11.5,boxW/7.2,boxH/5.2,(boxW-12)/(longestWord*.92)));
-      const maxChars=Math.max(3,Math.floor((boxW-12)/(labelSize*.92)));
-      const wrapped=[];
-      let line='';
-      for(const token of tokens){
-        const candidate=(line+token).replace(/\\s/g,'');
-        if(line && candidate.length>maxChars){
-          wrapped.push(line.trim());line=token.trimStart();
-        }else line+=token;
-      }
-      if(line.trim())wrapped.push(line.trim());
-      // แสดงข้อความครบทุกบรรทัด ไม่ตัดคำหรือเติมจุดไข่ปลา
-      const displayLines=wrapped.length?wrapped:[value];
-      const baseBoxH=Math.max(22,Math.min(s.h*1.75,safeGap*.86))*cardScale;
-      const textBlockH=displayLines.length*labelSize*1.18;
-      const statusExtra=blocked?10:0;
-      const finalBoxH=Math.max(baseBoxH,textBlockH+numberSize+statusExtra+22);
-      const textStartY=-finalBoxH/2+numberSize+10;
+      const m=seatMetrics.get(s.id);if(!m)return;
+      const a=S.assignments[s.id]||{},number=String(a.number||'—');
+      const {boxW,boxH,numberSize,labelSize,lineHeight,lines,blocked}=m;
+      const numberY=-boxH/2+numberSize+5;
+      const textStartY=-boxH/2+numberSize*2+10;
       const tooltipText=`เลขที่นั่ง ${number} · ${a.name||'ยังไม่กำหนดผู้เข้าร่วม'} · ${a.position||'ยังไม่ระบุตำแหน่ง'}`;
-      out+=`<g class="summary-seat" data-summary-seat="${esc(s.id)}" transform="translate(${s.x} ${s.y}) rotate(${s.rotation||0})" aria-label="${esc(tooltipText)}">
+      out+=`<g class="summary-seat" data-summary-seat="${esc(s.id)}" transform="translate(${s.x} ${s.y}) rotate(${s.rotation||0})" aria-label="${esc(tooltipText)}" tabindex="0">
         <title>${esc(tooltipText)}</title>
-        <rect x="${-boxW/2}" y="${-finalBoxH/2}" width="${boxW}" height="${finalBoxH}" rx="8" fill="${blocked?'#fff1f0':'#f8faf9'}" stroke="${blocked?'#b42323':s.color||'#59756b'}" stroke-width="2.2"/>
-        <text x="0" y="${-finalBoxH/2+numberSize+5}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${numberSize}" font-weight="bold" fill="#9a7134">ที่นั่ง ${esc(number)}</text>
-        <text x="0" y="${textStartY}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${labelSize}" font-weight="bold" fill="${blocked?'#a53131':'#192f38'}">${displayLines.map((line,i)=>`<tspan x="0" dy="${i===0?0:labelSize*1.18}">${esc(line)}</tspan>`).join('')}</text>
-        ${blocked?`<text x="0" y="${finalBoxH/2-6}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="7" fill="#b42323">งดใช้งาน</text>`:''}
+        <rect x="${-boxW/2}" y="${-boxH/2}" width="${boxW}" height="${boxH}" rx="8" fill="${blocked?'#fff1f0':'#f8faf9'}" stroke="${blocked?'#b42323':s.color||'#59756b'}" stroke-width="2.2"/>
+        <text x="0" y="${numberY}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="${numberSize}" font-weight="bold" fill="#9a7134">ที่นั่ง ${esc(number)}</text>
+        <text x="0" y="${textStartY}" text-anchor="middle" dominant-baseline="hanging" font-family="Tahoma, 'Noto Sans Thai', sans-serif" font-size="${labelSize}" font-weight="bold" fill="${blocked?'#a53131':'#192f38'}">${lines.map((line,i)=>`<tspan x="0" dy="${i===0?0:lineHeight}">${esc(line)}</tspan>`).join('')}</text>
+        ${blocked?`<text x="0" y="${boxH/2-6}" text-anchor="middle" dominant-baseline="central" font-family="Tahoma,sans-serif" font-size="7" fill="#b42323">งดใช้งาน</text>`:''}
       </g>`;
     });
     out+='</svg>';
@@ -450,7 +449,7 @@ function showSummarySeatTooltip(seatId,x,y){
   const tip=$('summarySeatTooltip');if(!tip)return;
   const seat=currentRoom()?.layout?.seats?.find(s=>s.id===seatId);if(!seat)return;
   const a=S.assignments[seatId]||{};
-  const rows=[['เลขที่นั่ง',a.number||'ยังไม่ระบุ'],['ชื่อ–นามสกุล',a.name||'ยังไม่กำหนดผู้เข้าร่วม'],['ตำแหน่ง',a.position||'ยังไม่ระบุตำแหน่ง'],['โซน / แถว',seat.group||'—'],['สถานะ',a.usage==='disabled'?'งดใช้งาน':'ใช้งาน']];
+  const rows=[['เลขที่นั่ง',a.number||'ยังไม่ระบุ'],['ชื่อ–นามสกุล',a.name||'ยังไม่กำหนดผู้เข้าร่วม'],['ตำแหน่ง',a.position||'ยังไม่ระบุตำแหน่ง'],['โซน / แถว',seat.group||'—'],['ลำดับที่นั่ง',seat.order??'—'],['สถานะ',a.usage==='disabled'?'งดใช้งาน':'ใช้งาน']];
   tip.innerHTML=`<strong>รายละเอียดที่นั่ง ${esc(a.number||'—')}</strong>`+rows.map(([label,value])=>`<div class="tooltip-row"><span class="tooltip-label">${esc(label)}</span><span class="tooltip-value">${esc(value)}</span></div>`).join('');
   tip.classList.add('visible');tip.setAttribute('aria-hidden','false');
   const pad=14,rect=tip.getBoundingClientRect();let left=x+16,top=y+16;
@@ -459,8 +458,9 @@ function showSummarySeatTooltip(seatId,x,y){
   tip.style.left=left+'px';tip.style.top=top+'px';
 }
 function hideSummarySeatTooltip(){const tip=$('summarySeatTooltip');if(tip){tip.classList.remove('visible');tip.setAttribute('aria-hidden','true');}}
-$('summaryMapCanvas').addEventListener('pointerover',e=>{const seat=e.target.closest('[data-summary-seat]');if(seat)showSummarySeatTooltip(seat.dataset.summarySeat,e.clientX,e.clientY);});
-$('summaryMapCanvas').addEventListener('pointermove',e=>{const seat=e.target.closest('[data-summary-seat]');if(seat)showSummarySeatTooltip(seat.dataset.summarySeat,e.clientX,e.clientY);else hideSummarySeatTooltip();});
+$('summaryMapCanvas').addEventListener('pointerover',e=>{const seat=e.target.closest?.('[data-summary-seat]');if(seat)showSummarySeatTooltip(seat.dataset.summarySeat,e.clientX,e.clientY);});
+$('summaryMapCanvas').addEventListener('pointerdown',e=>{const seat=e.target.closest?.('[data-summary-seat]');if(seat)showSummarySeatTooltip(seat.dataset.summarySeat,e.clientX,e.clientY);});
+$('summaryMapCanvas').addEventListener('pointermove',e=>{const seat=e.target.closest?.('[data-summary-seat]');if(seat)showSummarySeatTooltip(seat.dataset.summarySeat,e.clientX,e.clientY);else hideSummarySeatTooltip();});
 $('summaryMapCanvas').addEventListener('pointerout',e=>{if(e.target.closest('[data-summary-seat]')&&!e.relatedTarget?.closest?.('[data-summary-seat]'))hideSummarySeatTooltip();});
 $('summaryMapCanvas').addEventListener('focusin',e=>{const seat=e.target.closest('[data-summary-seat]');if(seat){const r=seat.getBoundingClientRect();showSummarySeatTooltip(seat.dataset.summarySeat,r.left+r.width/2,r.top+r.height/2);}});
 $('summaryMapCanvas').addEventListener('focusout',hideSummarySeatTooltip);
